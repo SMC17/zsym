@@ -17,6 +17,7 @@ pub const corpus = @import("corpus.zig");
 pub const entropy = @import("baselines/entropy.zig");
 pub const ngram = @import("baselines/ngram.zig");
 pub const compress = @import("baselines/compress.zig");
+pub const stationary_bootstrap = @import("baselines/stationary_bootstrap.zig");
 pub const pseudo = @import("data/pseudo.zig");
 pub const subst = @import("ciphers/substitution.zig");
 
@@ -25,6 +26,7 @@ test {
     _ = entropy;
     _ = ngram;
     _ = compress;
+    _ = stationary_bootstrap;
     _ = pseudo;
     _ = subst;
 }
