@@ -3,6 +3,10 @@
 //! Anti-pareidolia track: any "found structure" claim must beat matched
 //! pseudo-text. These generators produce strings with the same unigram /
 //! bigram / trigram statistics as the source, but no higher-order structure.
+//!
+//! Parallel `*Many` variants generate N samples in parallel. Each sample
+//! is seeded independently from `base_seed +% sample_idx`, so the multiset
+//! of samples is fixed by `base_seed` alone, regardless of `n_threads`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -128,6 +132,129 @@ fn sampleFromCounts(r: std.Random, counts: *const [256]u64, total: u64) u8 {
     return 255;
 }
 
+/// Generator selector for the `*Many` parallel variants.
+pub const Generator = enum { unigram, bigram, trigram };
+
+/// Per-thread worker context for `generateMany`.
+const ManyCtx = struct {
+    next_idx: std.atomic.Value(usize),
+    total: usize,
+    source: []const u8,
+    n_chars: usize,
+    base_seed: u64,
+    gen: Generator,
+    out: [][]u8,
+    errors: []?anyerror,
+    parent_alloc: Allocator,
+};
+
+fn manyWorker(ctx: *ManyCtx) void {
+    while (true) {
+        const idx = ctx.next_idx.fetchAdd(1, .monotonic);
+        if (idx >= ctx.total) return;
+        const sample_seed = ctx.base_seed +% @as(u64, idx);
+        const result: anyerror![]u8 = switch (ctx.gen) {
+            .unigram => unigramMatched(ctx.parent_alloc, ctx.source, ctx.n_chars, sample_seed),
+            .bigram => bigramMatched(ctx.parent_alloc, ctx.source, ctx.n_chars, sample_seed),
+            .trigram => trigramMatched(ctx.parent_alloc, ctx.source, ctx.n_chars, sample_seed),
+        };
+        if (result) |buf| {
+            ctx.out[idx] = buf;
+        } else |e| {
+            ctx.errors[idx] = e;
+        }
+    }
+}
+
+/// Generate `n_samples` pseudo-text samples in parallel using `gen`. Each
+/// sample is seeded from `base_seed +% sample_idx`, so the multiset of
+/// samples is fixed by `base_seed` regardless of `n_threads`.
+///
+/// `n_threads = null` → use `std.Thread.getCpuCount()`. `n_threads = 1`
+/// forces serial execution.
+///
+/// Caller owns the outer slice and each inner slice; free them via
+/// `freeMany(alloc, samples)`.
+pub fn generateMany(
+    alloc: Allocator,
+    source: []const u8,
+    n_chars: usize,
+    n_samples: usize,
+    base_seed: u64,
+    gen: Generator,
+    n_threads: ?usize,
+) ![][]u8 {
+    const out = try alloc.alloc([]u8, n_samples);
+    errdefer alloc.free(out);
+    if (n_samples == 0) return out;
+
+    const errors = try alloc.alloc(?anyerror, n_samples);
+    defer alloc.free(errors);
+    @memset(errors, null);
+
+    const requested_threads = n_threads orelse blk: {
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        break :blk cpu_count;
+    };
+    const t = @min(@max(requested_threads, 1), n_samples);
+
+    if (t <= 1) {
+        for (out, 0..) |*slot, i| {
+            const sample_seed = base_seed +% @as(u64, i);
+            slot.* = switch (gen) {
+                .unigram => try unigramMatched(alloc, source, n_chars, sample_seed),
+                .bigram => try bigramMatched(alloc, source, n_chars, sample_seed),
+                .trigram => try trigramMatched(alloc, source, n_chars, sample_seed),
+            };
+        }
+        return out;
+    }
+
+    var ctx: ManyCtx = .{
+        .next_idx = .init(0),
+        .total = n_samples,
+        .source = source,
+        .n_chars = n_chars,
+        .base_seed = base_seed,
+        .gen = gen,
+        .out = out,
+        .errors = errors,
+        .parent_alloc = alloc,
+    };
+
+    var threads_buf: [256]std.Thread = undefined;
+    const threads = threads_buf[0..t];
+    var spawned: usize = 0;
+    errdefer {
+        var k: usize = 0;
+        while (k < spawned) : (k += 1) threads[k].join();
+        // Free any successfully-allocated slots.
+        for (out[0..n_samples], 0..) |slot, i| {
+            if (errors[i] == null and i < spawned * 2) alloc.free(slot);
+        }
+    }
+    while (spawned < t) : (spawned += 1) {
+        threads[spawned] = try std.Thread.spawn(.{}, manyWorker, .{&ctx});
+    }
+    var k: usize = 0;
+    while (k < spawned) : (k += 1) threads[k].join();
+
+    // Surface the first error (deterministic by index).
+    for (errors) |e_opt| if (e_opt) |e| {
+        // Free successfully-allocated slots before bailing.
+        for (out, 0..) |slot, i| if (errors[i] == null) alloc.free(slot);
+        alloc.free(out);
+        return e;
+    };
+    return out;
+}
+
+/// Free a slice returned by `generateMany`.
+pub fn freeMany(alloc: Allocator, samples: [][]u8) void {
+    for (samples) |s| alloc.free(s);
+    alloc.free(samples);
+}
+
 test "unigram_matched preserves length and alphabet" {
     const source = "abcabcabcabcabc";
     const out = try unigramMatched(std.testing.allocator, source, 200, 42);
@@ -152,4 +279,21 @@ test "trigram_matched preserves length" {
     const out = try trigramMatched(std.testing.allocator, source, 500, 0);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqual(@as(usize, 500), out.len);
+}
+
+test "generateMany serial==parallel element-wise" {
+    // Per-sample seeding `(base_seed +% idx)` means each output slot is a
+    // pure function of (gen, source, n_chars, base_seed, idx) — so we get
+    // bit-exact element-wise equality between serial and parallel runs.
+    const source = "the quick brown fox jumps over the lazy dog " ** 5;
+
+    inline for (.{ Generator.unigram, Generator.bigram, Generator.trigram }) |gen| {
+        const serial = try generateMany(std.testing.allocator, source, 64, 11, 99, gen, 1);
+        defer freeMany(std.testing.allocator, serial);
+        const parallel = try generateMany(std.testing.allocator, source, 64, 11, 99, gen, 4);
+        defer freeMany(std.testing.allocator, parallel);
+        try std.testing.expectEqual(@as(usize, 11), serial.len);
+        try std.testing.expectEqual(@as(usize, 11), parallel.len);
+        for (serial, parallel) |s, p| try std.testing.expectEqualSlices(u8, s, p);
+    }
 }
