@@ -58,15 +58,27 @@ key + same headline score for the solver.
 
 Measurement: ReleaseFast build, `symbols bench --json voynich_chars.json`,
 3 reps per config, median wall-clock reported. Hardware: 4 physical cores /
-8 SMT threads, `powersave` governor active (so absolute numbers undersell
-the speedup on a perf-governed host). Voynich EVA char corpus (~191 KB
-joined).
+8 SMT threads. Voynich EVA char corpus (~191 KB joined).
+
+The CPU is `intel_pstate` in active mode with EPP `performance` system-wide;
+the `scaling_governor` label (`powersave` vs `performance`) is largely
+cosmetic on this driver — EPP is what controls perf bias. The numbers below
+were re-verified under forced `scaling_governor=performance` and matched the
+quiet-system reference within noise for the solver; pseudo and bootstrap are
+short enough (sub-100 ms total) that single-digit-load contention dominates
+the multiplier, so treat the small-op speedups as lower bounds.
 
 | operation                          | threads = 1 | threads = 8 | speedup |
 | ---------------------------------- | ----------- | ----------- | ------- |
 | solver hillclimb (16 restarts × 800 iters) | 6.61 s | 2.11 s | 3.13× |
 | pseudo trigramMatched (16 samples × 5000 chars) | 0.100 s | 0.026 s | 3.88× |
 | stationary bootstrap (B = 64, len = 20 000, mean\_block = 50) | 0.008 s | 0.003 s | 2.85× |
+
+Perf-governor re-verification (load avg ~6, three full runs, median of medians):
+solver 3.17×, pseudo 2.30×, bootstrap noise-dominated at 1.0×. The solver
+speedup is the load-bearing claim and it's stable across governors and load
+conditions. The pseudo/bootstrap multipliers are real on a quiet system but
+the *measurement* is fragile at this work-per-trial size.
 
 Notes:
 
@@ -78,7 +90,7 @@ Notes:
   Larger `B` and longer sources will widen the gap.
 - Pseudo trigramMatched builds a per-sample trigram transition table
   (Markov-2) — this is the dominant cost; the parallel speedup is close to
-  the physical-core ceiling.
+  the physical-core ceiling on a quiet system.
 - Determinism contract: tests `hillclimb serial==parallel for same seed`,
   `generateMany serial==parallel element-wise`, and `distribution
   serial==parallel element-wise` enforce that increasing `n_threads` cannot
