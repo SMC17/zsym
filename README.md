@@ -31,8 +31,8 @@ This repo is a port-in-progress of:
 - ✅ Shannon entropy + conditional entropy (plug-in + Miller-Madow)
 - ✅ character n-gram LM (Laplace smoothing)
 - ✅ pseudo-text generators (unigram / bigram / trigram-matched)
-- ⏳ substitution solver (hillclimb scored by n-gram LM)
-- ⏳ stationary bootstrap (Politis-Romano)
+- ✅ substitution solver (hillclimb scored by n-gram LM, parallel restarts)
+- ✅ stationary bootstrap (Politis-Romano, parallel resamples)
 
 ## Build
 
@@ -42,7 +42,47 @@ Requires Zig 0.16.0 or newer.
 zig build              # compile the `symbols` CLI
 zig build test         # run unit tests
 zig build run -- baselines --corpus voynich --json data/raw/voynich/voynich.json
+zig build run -- bench --json data/raw/voynich/voynich_chars.json
 ```
+
+## Threaded speedup
+
+The CPU-bound primitives — substitution hillclimb, matched pseudo-text
+generation, and stationary bootstrap resampling — are each
+embarrassingly-parallel over their outer "trial" axis (restart / sample /
+replicate). Each worker is seeded deterministically as
+`base_seed +% trial_idx`, so the multiset of trial outcomes is fixed by
+`base_seed` alone — re-running with `n_threads = 1` vs `n_threads = N`
+produces bit-exact equal results for pseudo and bootstrap, and the same best
+key + same headline score for the solver.
+
+Measurement: ReleaseFast build, `symbols bench --json voynich_chars.json`,
+3 reps per config, median wall-clock reported. Hardware: 4 physical cores /
+8 SMT threads, `powersave` governor active (so absolute numbers undersell
+the speedup on a perf-governed host). Voynich EVA char corpus (~191 KB
+joined).
+
+| operation                          | threads = 1 | threads = 8 | speedup |
+| ---------------------------------- | ----------- | ----------- | ------- |
+| solver hillclimb (16 restarts × 800 iters) | 6.61 s | 2.11 s | 3.13× |
+| pseudo trigramMatched (16 samples × 5000 chars) | 0.100 s | 0.026 s | 3.88× |
+| stationary bootstrap (B = 64, len = 20 000, mean\_block = 50) | 0.008 s | 0.003 s | 2.85× |
+
+Notes:
+
+- The solver scales to the number of *physical* cores rather than logical
+  ones because each restart is a tight per-byte LM-scoring loop that
+  saturates one core's execution units (SMT siblings contend).
+- Bootstrap's speedup is limited by per-replicate `alloc.alloc(u8, N)` plus
+  short kernel time — it's the small-N regime where parallel overhead bites.
+  Larger `B` and longer sources will widen the gap.
+- Pseudo trigramMatched builds a per-sample trigram transition table
+  (Markov-2) — this is the dominant cost; the parallel speedup is close to
+  the physical-core ceiling.
+- Determinism contract: tests `hillclimb serial==parallel for same seed`,
+  `generateMany serial==parallel element-wise`, and `distribution
+  serial==parallel element-wise` enforce that increasing `n_threads` cannot
+  change results. See `src/ciphers/substitution.zig` and friends.
 
 ## Cross-tool interop
 
