@@ -68,17 +68,27 @@ pub const NGramLM = struct {
     }
 
     /// log_2 P(token | context). context is the last (n-1) tokens or fewer.
+    /// Uses the LM's internal arena for scratch — NOT thread-safe.
     pub fn logProbToken(self: *NGramLM, context: []const []const u8, token: []const u8) !f64 {
-        const alloc = self.arena.allocator();
+        return self.logProbTokenWithScratch(self.arena.allocator(), context, token);
+    }
+
+    /// Thread-safe variant of `logProbToken`: scratch allocations come from
+    /// `scratch` (typically a per-thread arena) instead of the LM's arena.
+    /// Hashmap reads on `ctx_counts` / `gram_counts` are concurrent-safe
+    /// **only after fit() has completed** — no writer may run concurrently.
+    pub fn logProbTokenWithScratch(self: *NGramLM, scratch: Allocator, context: []const []const u8, token: []const u8) !f64 {
         const n = self.n;
         const take = if (context.len + 1 >= n) context.len - (n - 1) else 0;
         const ctx = context[take..];
-        const ctx_str = try joinTokens(alloc, ctx);
+        const ctx_str = try joinTokens(scratch, ctx);
+        defer scratch.free(ctx_str);
         var pair_tokens: std.ArrayList([]const u8) = .empty;
-        defer pair_tokens.deinit(alloc);
-        try pair_tokens.appendSlice(alloc, ctx);
-        try pair_tokens.append(alloc, token);
-        const pair_str = try joinTokens(alloc, pair_tokens.items);
+        defer pair_tokens.deinit(scratch);
+        try pair_tokens.appendSlice(scratch, ctx);
+        try pair_tokens.append(scratch, token);
+        const pair_str = try joinTokens(scratch, pair_tokens.items);
+        defer scratch.free(pair_str);
         const num_count = self.gram_counts.get(pair_str) orelse 0;
         const denom_count = self.ctx_counts.get(ctx_str) orelse 0;
         const num: f64 = @as(f64, @floatFromInt(num_count)) + self.alpha;
@@ -87,19 +97,24 @@ pub const NGramLM = struct {
     }
 
     /// Total log_2 P(tokens) with Laplace smoothing over the trained alphabet.
+    /// Uses the LM's internal arena for scratch — NOT thread-safe.
     pub fn logProb(self: *NGramLM, tokens: []const []const u8) !f64 {
-        const alloc = self.arena.allocator();
+        return self.logProbWithScratch(self.arena.allocator(), tokens);
+    }
+
+    /// Thread-safe variant of `logProb`. See `logProbTokenWithScratch`.
+    pub fn logProbWithScratch(self: *NGramLM, scratch: Allocator, tokens: []const []const u8) !f64 {
         const n = self.n;
         const sentinel = "<s>";
         var padded: std.ArrayList([]const u8) = .empty;
-        defer padded.deinit(alloc);
-        try padded.appendNTimes(alloc, sentinel, n - 1);
-        try padded.appendSlice(alloc, tokens);
+        defer padded.deinit(scratch);
+        try padded.appendNTimes(scratch, sentinel, n - 1);
+        try padded.appendSlice(scratch, tokens);
         var lp: f64 = 0;
         var i: usize = n - 1;
         while (i < padded.items.len) : (i += 1) {
             const ctx = padded.items[i - (n - 1) .. i];
-            lp += try self.logProbToken(ctx, padded.items[i]);
+            lp += try self.logProbTokenWithScratch(scratch, ctx, padded.items[i]);
         }
         return lp;
     }
