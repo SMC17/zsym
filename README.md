@@ -24,15 +24,22 @@ external Zig deps.
 
 ## Status
 
-This repo is a port-in-progress of:
+**v1.0.0 — stable API.** All seven planned primitives have shipped, all
+22/22 unit tests pass, parallelism is wired through to the three
+CPU-bound inner loops, and cross-substrate numeric agreement with the
+Python `symbols` reference has been verified on the Voynich EVA
+character corpus (see [Cross-tool interop](#cross-tool-interop)).
 
 - ✅ corpus JSON loader (reads `symbols/data/raw/*.json`)
 - ✅ compression bits-per-char (gzip via std.compress)
 - ✅ Shannon entropy + conditional entropy (plug-in + Miller-Madow)
 - ✅ character n-gram LM (Laplace smoothing)
-- ✅ pseudo-text generators (unigram / bigram / trigram-matched)
-- ✅ substitution solver (hillclimb scored by n-gram LM, parallel restarts)
-- ✅ stationary bootstrap (Politis-Romano, parallel resamples)
+- ✅ pseudo-text generators (unigram / bigram / trigram-matched, parallel per-sample)
+- ✅ substitution solver (hillclimb scored by n-gram LM, parallel restarts with deterministic per-restart seeding)
+- ✅ stationary bootstrap (Politis-Romano, parallel resamples with deterministic per-resample seeding)
+
+The 1.0 line locks the public CLI surface (`baselines`, `bench`) and
+the on-disk Corpus JSON contract. Breaking changes wait for v2.0.
 
 ## Build
 
