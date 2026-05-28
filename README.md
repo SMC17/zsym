@@ -1,5 +1,12 @@
 # symbols-zig
 
+> Reproducible decipherment methodology in Zig applied to the Voynich character corpus. Findings are claims; the methodology is the artifact.
+
+[![CI](https://github.com/SMC17/symbols-zig/actions/workflows/ci.yml/badge.svg)](https://github.com/SMC17/symbols-zig/actions)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
+[![Zig: 0.16](https://img.shields.io/badge/Zig-0.16-orange.svg)](https://ziglang.org/)
+[![Tests: 22/22](https://img.shields.io/badge/tests-22%2F22-success.svg)](#tests)
+
 > **Methodology, not a decipherment.**
 > This repository is a Zig implementation of a reproducible decipherment
 > methodology applied to the Voynich character corpus (and, via the sibling
@@ -73,6 +80,28 @@ What is **not** safe to claim:
 
 See `STATUS.md` for the full proof-vocabulary index.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Short symbol corpus<br/>e.g. Voynich] --> B[Corpus loader]
+    B --> C[Statistics<br/>Shannon · conditional entropy]
+    B --> D[N-gram LM]
+    B --> E[gzip compression baseline]
+    C & D & E --> F[Pseudo-text generators<br/>permutation null]
+    F --> G[Hillclimb substitution solver]
+    G --> H[Stationary bootstrap CI]
+    H --> I[Verdict: F-finding<br/>reported as claim]
+
+    J[Parent repo ~/symbols<br/>Python+MLX research] -.consumes.-> I
+    click J "https://github.com/SMC17/symbols"
+    style I fill:#fef3c7,stroke:#d97706
+```
+
+Each node is a Zig primitive in this repo; the dashed edge marks the
+parent `symbols` Python+MLX research lane as the consumer of the
+methodology's verdicts.
+
 ## Build
 
 Requires Zig 0.16.0 or newer.
@@ -83,6 +112,19 @@ zig build test         # run unit tests (22/22)
 zig build run -- baselines --corpus voynich --json data/raw/voynich/voynich.json
 zig build run -- bench --json data/raw/voynich/voynich_chars.json
 ```
+
+## Tests
+
+22/22 tests on Zig 0.16 / Linux x86_64 (re-verified 2026-05-27):
+
+```
+$ zig build test --summary all
+Build Summary: 3/3 steps succeeded; 22/22 tests passed
+test success
++- run test 22 pass (22 total)
+```
+
+CI runs this same command on every push (see badge above).
 
 ## Threaded posture
 
