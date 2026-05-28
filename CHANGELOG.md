@@ -4,6 +4,37 @@ All notable changes to `symbols-zig` will be documented here. Format follows [Ke
 
 ## [Unreleased]
 
+### Tier 1 public push — 2026-05-27
+
+Per the merchant-tier policy: Tier 1 substrate primitives become
+GH-canonical public. symbols-zig qualifies — 22/22 tests pass, all
+seven planned primitives ship, deterministic-parallel kernels are
+covered by serial==parallel tests, and the cross-substrate JSON
+contract is stable.
+
+Concrete changes in this push:
+
+- Replaced the 12-line syndication-mirror stub `README.md` with a full
+  Tier-1-public README that **leads with the methodology framing**:
+  "methodology is the artifact; findings are claims; no specific
+  decipherment is being made." Cites the parent `symbols` repo as
+  the research lane.
+- Removed `.canonical-readme.md` (its content moved into `README.md`).
+- Removed orphan `.claude/worktrees/` gitlink (no `.gitmodules` entry;
+  was a phantom submodule reference).
+- Added `.claude/` to `.gitignore`.
+- `SECURITY.md` contact updated from a personal X handle to
+  `sean@sunlitmoon.online`.
+- `CONTRIBUTING.md` link to parent `symbols` repo corrected to
+  `github.com/SMC17/symbols`.
+- Git history filtered to strip `Co-Authored-By: Claude` trailers and
+  the `.claude/` tree per the no-claude-attribution + no-claude-harness
+  -in-public-history policies. The v1.0.0 tag is preserved (with the
+  honesty correction it already carries) and re-pointed at the
+  rewritten commit.
+
+No code changes; substrate is identical to the pre-push HEAD.
+
 ### Honesty correction — 2026-05-21
 
 Prior `v1.0.0` "production-grade hygiene milestone" framing (below) was a Type-I error class per the no-premature-production-claims doctrine.

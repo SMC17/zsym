@@ -12,7 +12,12 @@ Despite the `v1.0.0` git tag, this project is **pre-1.0 in semver spirit** for t
 
 This file is the substrate's canonical posture statement. The CHANGELOG entry on 2026-05-21 records the correction.
 
-**Syndication-mirror context.** The public README in this repo is a 12-line syndication-mirror stub pointing at the canonical origin at sunlitmoon.online. The "stable API" / "10–50× faster" / "1.0 line locks the public CLI surface" claims referenced below historically live at the canonical README, not in this mirror — but the v1.0.0 git tag (the canonical Type-I) is visible publicly here, so the correction is necessary at this surface too.
+**README posture (2026-05-27).** The previous 12-line syndication-mirror
+stub README was replaced with a full Tier-1-public README that leads with
+the methodology framing ("methodology is the artifact; findings are
+claims") and explicitly disclaims any specific decipherment. The v1.0.0
+git tag (the canonical Type-I) is preserved for changelog continuity but
+called out in both README §Status and this file.
 
 ## Proof-vocabulary index
 
@@ -38,7 +43,7 @@ Levels mirror the AGENT_HARNESS convention used by mast, carreir, and Prism:
 
 ## Test posture
 
-`zig build test --summary all` (verified 2026-05-21):
+`zig build test --summary all` (verified 2026-05-21, re-verified 2026-05-27):
 
 ```
 Build Summary: 3/3 steps succeeded; 22/22 tests passed

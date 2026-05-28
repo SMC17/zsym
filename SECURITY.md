@@ -5,7 +5,7 @@
 Please report security vulnerabilities **privately**:
 
 - GitHub Security Advisories on this repository (preferred), or
-- Direct contact via https://x.com/Staxxxx17
+- Email: `sean@sunlitmoon.online`
 
 Do **not** open public GitHub issues for security-sensitive reports.
 

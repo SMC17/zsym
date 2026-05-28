@@ -1,7 +1,7 @@
 # Contributing to symbols-zig
 
 This is the Zig port of the load-bearing primitives from
-[`symbols`](https://github.com/stax/symbols) — corpus loaders, compression
+[`symbols`](https://github.com/SMC17/symbols) — corpus loaders, compression
 baselines, entropy estimators, n-gram language models, substitution
 solvers, and matched-statistics pseudo-text generators.
 
