@@ -4,6 +4,7 @@
 //!     symbols baselines --json data/raw/voynich/voynich.json
 //!     symbols baselines --text-file path/to/file.txt
 //!     symbols bench --json PATH [--threads N]
+//!     symbols audit-residual --json PATH [--mean-block-len L] [--replicates B] [--seed S]
 //!     symbols version
 
 const std = @import("std");
@@ -11,11 +12,17 @@ const Io = std.Io;
 const symbols = @import("symbols");
 
 const Args = struct {
-    cmd: enum { baselines, bench, help, version } = .help,
+    cmd: enum { baselines, bench, audit_residual, help, version } = .help,
     json_path: ?[]const u8 = null,
     text_path: ?[]const u8 = null,
     /// Thread count for parallel ops. `null` = auto (all CPUs).
     threads: ?usize = null,
+    /// Stationary-bootstrap mean block length (PR-A headline = 100).
+    mean_block_len: usize = 100,
+    /// Bootstrap replicates (PR-A headline = 200).
+    replicates: usize = 200,
+    /// Master seed for the paired-residual run.
+    seed: u64 = 0,
 };
 
 fn parseUsize(s: []const u8) !usize {
@@ -30,6 +37,8 @@ fn parseArgs(argv: []const []const u8) !Args {
         a.cmd = .baselines;
     } else if (std.mem.eql(u8, cmd, "bench")) {
         a.cmd = .bench;
+    } else if (std.mem.eql(u8, cmd, "audit-residual")) {
+        a.cmd = .audit_residual;
     } else if (std.mem.eql(u8, cmd, "version")) {
         a.cmd = .version;
         return a;
@@ -54,6 +63,18 @@ fn parseArgs(argv: []const []const u8) !Args {
             i += 1;
             if (i >= argv.len) return error.MissingValue;
             a.threads = try parseUsize(argv[i]);
+        } else if (std.mem.eql(u8, arg, "--mean-block-len") or std.mem.eql(u8, arg, "-L")) {
+            i += 1;
+            if (i >= argv.len) return error.MissingValue;
+            a.mean_block_len = try parseUsize(argv[i]);
+        } else if (std.mem.eql(u8, arg, "--replicates") or std.mem.eql(u8, arg, "-B")) {
+            i += 1;
+            if (i >= argv.len) return error.MissingValue;
+            a.replicates = try parseUsize(argv[i]);
+        } else if (std.mem.eql(u8, arg, "--seed")) {
+            i += 1;
+            if (i >= argv.len) return error.MissingValue;
+            a.seed = try std.fmt.parseInt(u64, argv[i], 10);
         }
     }
     return a;
@@ -69,6 +90,11 @@ fn printHelp(w: *Io.Writer) !void {
         \\  symbols bench [--json PATH] [--threads N]
         \\                                       benchmark threaded speedup on
         \\                                       solver / pseudo / bootstrap
+        \\  symbols audit-residual --json PATH [--text-file PATH]
+        \\                         [--mean-block-len L] [--replicates B] [--seed S]
+        \\                                       run PR-A paired residual gzip-bpc
+        \\                                       gap on a corpus + emit JSON to stdout
+        \\                                       (cross-substrate audit harness)
         \\  symbols version                      print version
         \\
         \\Global flags:
@@ -309,6 +335,74 @@ fn runBench(alloc: std.mem.Allocator, io: Io, w: *Io.Writer, args: Args) !void {
     });
 }
 
+/// Run the PR-A paired residual gzip-bpc protocol and emit a single-line
+/// JSON record to stdout. Designed for the cross-substrate audit harness in
+/// `~/symbols/scripts/audit_residual_gap_parity.sh`, which diffs Zig output
+/// against `scripts/bootstrap_residual_gap_stationary.py`.
+fn runAuditResidual(alloc: std.mem.Allocator, io: Io, w: *Io.Writer, args: Args) !void {
+    var text: []u8 = undefined;
+    var owns_text = false;
+    var name: []const u8 = "(unknown)";
+    var corpus_opt: ?symbols.corpus.Corpus = null;
+
+    if (args.json_path) |p| {
+        corpus_opt = try symbols.corpus.load(alloc, io, p);
+        const c = &corpus_opt.?;
+        // Same join used by `runBaselines` and by the Python
+        // `Corpus.joined_text("\n")` in `_load_corpus("voynich")`. For the
+        // canonical voynich_chars.json (single document, per-char glyphs)
+        // both substrates produce byte-identical input strings.
+        text = try c.joinedChars("\n");
+        name = c.name;
+    } else if (args.text_path) |p| {
+        text = try readAllToOwned(alloc, io, p);
+        owns_text = true;
+        name = p;
+    } else {
+        try w.print("error: pass --json PATH or --text-file PATH\n", .{});
+        return error.NoInput;
+    }
+    defer if (corpus_opt) |*c| {
+        var m = c.*;
+        m.deinit();
+    };
+    defer if (owns_text) alloc.free(text);
+
+    const t0 = Io.Clock.awake.now(io).nanoseconds;
+    var res = try symbols.residual_gap.pairedResidualParallel(
+        alloc,
+        text,
+        args.mean_block_len,
+        args.replicates,
+        args.seed,
+        args.threads,
+    );
+    defer res.deinit(alloc);
+    const t1 = Io.Clock.awake.now(io).nanoseconds;
+    const wallclock_s: f64 = @as(f64, @floatFromInt(t1 - t0)) / 1e9;
+
+    // Single-line JSON, schema mirrors the Python `paired_residual_distribution`
+    // return dict but only the fields the audit script consumes.
+    try w.print(
+        \\{{"corpus":"{s}","length":{d},"mean_block_len":{d},"B":{d},"seed":{d},"point_real_gzip":{d:.10},"mean_real":{d:.10},"mean_pseudo":{d:.10},"mean_residual":{d:.10},"std_residual":{d:.10},"ci_residual_low":{d:.10},"ci_residual_high":{d:.10},"wallclock_seconds":{d:.4},"substrate":"zig"}}
+    , .{
+        name,
+        text.len,
+        res.mean_block_len,
+        res.b,
+        args.seed,
+        res.point_real_gzip,
+        res.mean_real,
+        res.mean_pseudo,
+        res.mean_residual,
+        res.std_residual,
+        res.ci_low,
+        res.ci_high,
+        wallclock_s,
+    });
+    try w.print("\n", .{});
+}
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const argv = try init.minimal.args.toSlice(arena);
@@ -330,6 +424,7 @@ pub fn main(init: std.process.Init) !void {
         .version => try w.print("symbols-zig 0.0.1\n", .{}),
         .baselines => try runBaselines(init.gpa, init.io, w, args),
         .bench => try runBench(init.gpa, init.io, w, args),
+        .audit_residual => try runAuditResidual(init.gpa, init.io, w, args),
     }
     try w.flush();
 }

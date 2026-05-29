@@ -37,6 +37,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Thread = std.Thread;
 
 const compress = @import("../baselines/compress.zig");
 const pseudo = @import("../data/pseudo.zig");
@@ -138,6 +139,152 @@ pub fn pairedResidual(
 
     // Compute percentile CI on a sorted copy so caller-visible `residuals`
     // preserves the per-replicate index order (important for audit).
+    const sorted = try alloc.alloc(f64, residuals.len);
+    defer alloc.free(sorted);
+    @memcpy(sorted, residuals);
+    std.mem.sort(f64, sorted, {}, std.sort.asc(f64));
+    const ci_low = percentile(sorted, 2.5);
+    const ci_high = percentile(sorted, 97.5);
+
+    return .{
+        .b = b,
+        .mean_block_len = mean_block_len,
+        .point_real_gzip = point_real,
+        .mean_real = mean_real,
+        .mean_pseudo = mean_pseu,
+        .mean_residual = mean_res,
+        .std_residual = std_res,
+        .ci_low = ci_low,
+        .ci_high = ci_high,
+        .residuals = residuals,
+        .real_gzip_bpc = real_g,
+        .pseudo_gzip_bpc = pseudo_g,
+    };
+}
+
+/// Per-thread worker context for `pairedResidualParallel`.
+const ParallelCtx = struct {
+    next_idx: std.atomic.Value(usize),
+    total: usize,
+    source: []const u8,
+    mean_block_len: usize,
+    base_seed: u64,
+    real_g: []f64,
+    pseudo_g: []f64,
+    residuals: []f64,
+    errors: []?anyerror,
+    parent_alloc: Allocator,
+};
+
+fn parallelWorker(ctx: *ParallelCtx) void {
+    while (true) {
+        const i = ctx.next_idx.fetchAdd(1, .monotonic);
+        if (i >= ctx.total) return;
+        const real_seed: u64 = ctx.base_seed +% (@as(u64, i) *% 2);
+        const pseu_seed: u64 = ctx.base_seed +% (@as(u64, i) *% 2 +% 1);
+
+        const real_sample = stationary_bootstrap.sample(ctx.parent_alloc, ctx.source, ctx.mean_block_len, real_seed) catch |e| {
+            ctx.errors[i] = e;
+            continue;
+        };
+        defer ctx.parent_alloc.free(real_sample);
+
+        const pseu_sample = pseudo.trigramMatched(ctx.parent_alloc, real_sample, real_sample.len, pseu_seed) catch |e| {
+            ctx.errors[i] = e;
+            continue;
+        };
+        defer ctx.parent_alloc.free(pseu_sample);
+
+        const g_real = compress.gzipBitsPerByte(ctx.parent_alloc, real_sample) catch |e| {
+            ctx.errors[i] = e;
+            continue;
+        };
+        const g_pseu = compress.gzipBitsPerByte(ctx.parent_alloc, pseu_sample) catch |e| {
+            ctx.errors[i] = e;
+            continue;
+        };
+
+        ctx.real_g[i] = g_real;
+        ctx.pseudo_g[i] = g_pseu;
+        ctx.residuals[i] = g_pseu - g_real;
+    }
+}
+
+/// Threaded variant of `pairedResidual`. Identical semantics (same per-replicate
+/// seed derivation `(seed +% 2i, seed +% 2i+1)`), so the multiset of residuals
+/// is bit-exact identical to the serial version for any thread count. Only the
+/// wall-clock differs.
+///
+/// `n_threads = null` → use `std.Thread.getCpuCount()`. `n_threads = 1` → serial
+/// path identical to `pairedResidual` semantically.
+pub fn pairedResidualParallel(
+    alloc: Allocator,
+    source: []const u8,
+    mean_block_len: usize,
+    b: usize,
+    seed: u64,
+    n_threads: ?usize,
+) !ResidualResult {
+    if (b == 0) return error.ZeroReplicates;
+    if (mean_block_len == 0) return error.ZeroBlockLength;
+    if (source.len < 3) return error.SourceTooShort;
+
+    const requested_threads = n_threads orelse blk: {
+        const cpu_count = Thread.getCpuCount() catch 1;
+        break :blk cpu_count;
+    };
+    const t = @min(@max(requested_threads, 1), b);
+    if (t <= 1) return pairedResidual(alloc, source, mean_block_len, b, seed);
+
+    const residuals = try alloc.alloc(f64, b);
+    errdefer alloc.free(residuals);
+    const real_g = try alloc.alloc(f64, b);
+    errdefer alloc.free(real_g);
+    const pseudo_g = try alloc.alloc(f64, b);
+    errdefer alloc.free(pseudo_g);
+
+    const errors = try alloc.alloc(?anyerror, b);
+    defer alloc.free(errors);
+    @memset(errors, null);
+
+    var ctx: ParallelCtx = .{
+        .next_idx = .init(0),
+        .total = b,
+        .source = source,
+        .mean_block_len = mean_block_len,
+        .base_seed = seed,
+        .real_g = real_g,
+        .pseudo_g = pseudo_g,
+        .residuals = residuals,
+        .errors = errors,
+        .parent_alloc = alloc,
+    };
+
+    var threads_buf: [256]Thread = undefined;
+    const threads = threads_buf[0..t];
+    var spawned: usize = 0;
+    while (spawned < t) : (spawned += 1) {
+        threads[spawned] = try Thread.spawn(.{}, parallelWorker, .{&ctx});
+    }
+    var k: usize = 0;
+    while (k < spawned) : (k += 1) threads[k].join();
+
+    // Surface the first error deterministically (lowest index).
+    for (errors, 0..) |e_opt, idx| if (e_opt) |e| {
+        _ = idx;
+        alloc.free(residuals);
+        alloc.free(real_g);
+        alloc.free(pseudo_g);
+        return e;
+    };
+
+    const point_real = try compress.gzipBitsPerByte(alloc, source);
+
+    const mean_real = meanF64(real_g);
+    const mean_pseu = meanF64(pseudo_g);
+    const mean_res = meanF64(residuals);
+    const std_res = stdF64(residuals, mean_res);
+
     const sorted = try alloc.alloc(f64, residuals.len);
     defer alloc.free(sorted);
     @memcpy(sorted, residuals);
@@ -274,6 +421,33 @@ test "percentile: known values on a sorted vector" {
     try std.testing.expectApproxEqAbs(@as(f64, 4.0), percentile(&sorted, 100.0), 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), percentile(&sorted, 25.0), 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 3.0), percentile(&sorted, 75.0), 1e-9);
+}
+
+test "pairedResidualParallel: element-wise identical to serial under same seed" {
+    // The per-replicate seed derivation `(seed +% 2i, seed +% 2i+1)` is pure
+    // in (seed, i), so any thread count must produce the exact same multiset
+    // of residuals indexed by replicate position. We verify element-wise
+    // equality, which is the strongest form of determinism.
+    const src = "the quick brown fox jumps over the lazy dog " ** 30;
+    var serial = try pairedResidual(std.testing.allocator, src, 40, 8, 4242);
+    defer serial.deinit(std.testing.allocator);
+    var par = try pairedResidualParallel(std.testing.allocator, src, 40, 8, 4242, 4);
+    defer par.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(serial.b, par.b);
+    try std.testing.expectEqualSlices(f64, serial.residuals, par.residuals);
+    try std.testing.expectEqualSlices(f64, serial.real_gzip_bpc, par.real_gzip_bpc);
+    try std.testing.expectEqualSlices(f64, serial.pseudo_gzip_bpc, par.pseudo_gzip_bpc);
+    try std.testing.expectEqual(serial.mean_residual, par.mean_residual);
+    try std.testing.expectEqual(serial.ci_low, par.ci_low);
+    try std.testing.expectEqual(serial.ci_high, par.ci_high);
+}
+
+test "pairedResidualParallel: n_threads=1 falls through to serial" {
+    const src = "abracadabra abracadabra " ** 50;
+    var par = try pairedResidualParallel(std.testing.allocator, src, 25, 4, 7, 1);
+    defer par.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 4), par.residuals.len);
 }
 
 test "pairedResidual: error on zero replicates / zero block / tiny source" {

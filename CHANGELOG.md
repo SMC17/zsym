@@ -4,6 +4,40 @@ All notable changes to `symbols-zig` will be documented here. Format follows [Ke
 
 ## [Unreleased]
 
+### Parallel residual variant + cross-substrate parity audit — 2026-05-29
+
+Added `pairedResidualParallel(alloc, source, mean_block_len, b, seed, n_threads)`
+to `src/methodology/residual_gap.zig`. Same per-replicate seed derivation
+`(seed +% 2i, seed +% 2i+1)` as the serial path, so the multiset of
+residuals is element-wise identical for any thread count (locked by a
+serial==parallel test). `n_threads=1` falls through to the serial
+implementation.
+
+Drops 8-replicate wallclock on the 190KB Voynich EVA char corpus from
+~240s serial to ~44s on 8 CPUs.
+
+Wired the variant to a new `symbols audit-residual` CLI subcommand that
+emits a single-line JSON record matching the Python
+`paired_residual_distribution` return shape. This is the Zig half of the
+cross-substrate parity audit harness in
+`~/symbols/scripts/audit_residual_gap_parity.sh`.
+
+Verdict at B=40, L=100, seed=0 on Voynich EVA chars:
+
+- Python μ_residual = +0.3385 (CI [+0.3149, +0.3890])
+- Zig    μ_residual = +0.3353 (CI [+0.2907, +0.3709])
+- |Δμ| = 0.0031 vs tolerance 3×combined_SE_mean = 0.0147
+- CIs overlap by +0.056 bpc
+- PROMOTE-OK
+
+Cross-substrate-agreement row in STATUS.md advanced from
+`posture-observable-end-to-end (claimed)` to `audited` (single-shot;
+continuous CI step still pending).
+
+29 → 31 tests (added serial==parallel element-wise + n_threads=1
+fall-through). `zig build && zig build test --summary all` clean on
+Zig 0.16 / Linux x86_64.
+
 ### F7 methodology primitive — 2026-05-29
 
 Added `src/methodology/residual_gap.zig`: paired residual gzip-bpc gap with
@@ -24,12 +58,6 @@ discipline used by the existing parallel primitives.
 7 new tests cover determinism, structured-source positive-residual
 sanity, CI bookkeeping, percentile interpolation, and error paths.
 22 → 29 tests; `zig build && zig build test --summary all` clean.
-
-Pending follow-up (deferred): cross-substrate numeric agreement vs the
-Python sibling `scripts/bootstrap_residual_gap_stationary.py` on the
-Voynich EVA character corpus, with the residual *mean* as the comparable
-quantity (byte-exact pseudo differs across RNG substrates per the module
-docstring).
 
 ### Tier 1 public push — 2026-05-27
 
