@@ -4,6 +4,33 @@ All notable changes to `symbols-zig` will be documented here. Format follows [Ke
 
 ## [Unreleased]
 
+### F7 methodology primitive — 2026-05-29
+
+Added `src/methodology/residual_gap.zig`: paired residual gzip-bpc gap with
+Politis-Romano stationary-bootstrap CIs (the PR-A protocol from the parent
+`symbols` repo). This is the load-bearing computation behind F7
+(Voynich / Linear A / Rongorongo cross-corpus residual ordering), now
+reproducible in the Zig substrate.
+
+Composes four pre-existing primitives — `compress.gzipBitsPerByte`,
+`pseudo.trigramMatched`, `stationary_bootstrap.sample`, plus a linear-
+interp percentile aggregator — into a single `pairedResidual(...)` call
+returning the residual distribution + mean + 2.5/97.5 percentile CI.
+
+Per-replicate seeding `(seed +% 2i, seed +% 2i+1)` makes the result a pure
+function of `(source, mean_block_len, b, seed)`; matches the determinism
+discipline used by the existing parallel primitives.
+
+7 new tests cover determinism, structured-source positive-residual
+sanity, CI bookkeeping, percentile interpolation, and error paths.
+22 → 29 tests; `zig build && zig build test --summary all` clean.
+
+Pending follow-up (deferred): cross-substrate numeric agreement vs the
+Python sibling `scripts/bootstrap_residual_gap_stationary.py` on the
+Voynich EVA character corpus, with the residual *mean* as the comparable
+quantity (byte-exact pseudo differs across RNG substrates per the module
+docstring).
+
 ### Tier 1 public push — 2026-05-27
 
 Per the merchant-tier policy: Tier 1 substrate primitives become
