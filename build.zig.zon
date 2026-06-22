@@ -1,7 +1,7 @@
 .{
-    .name = .symbols,
+    .name = .zsym,
     .version = "1.0.0",
-    .fingerprint = 0xdf834d85455c4a66,
+    .fingerprint = 0xbe8f96b7ac144262,
     .minimum_zig_version = "0.16.0",
     .paths = .{
         "build.zig",

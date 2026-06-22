@@ -2,7 +2,9 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize = b.standardOptimizeOption(.{
+        .preferred_optimize_mode = .ReleaseFast,
+    });
 
     // The library module — every test and binary depends on this.
     const lib_mod = b.createModule(.{
@@ -23,6 +25,11 @@ pub fn build(b: *std.Build) void {
         .name = "symbols",
         .root_module = exe_mod,
     });
+    
+    if (optimize != .Debug) {
+        exe.root_module.strip = true;
+    }
+
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
