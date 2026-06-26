@@ -22,6 +22,7 @@ pub const compress = @import("baselines/compress.zig");
 pub const stationary_bootstrap = @import("baselines/stationary_bootstrap.zig");
 pub const pseudo = @import("data/pseudo.zig");
 pub const subst = @import("ciphers/substitution.zig");
+pub const poly = @import("ciphers/polyalphabetic.zig");
 pub const residual_gap = @import("methodology/residual_gap.zig");
 
 test {
@@ -32,5 +33,6 @@ test {
     _ = stationary_bootstrap;
     _ = pseudo;
     _ = subst;
+    _ = poly;
     _ = residual_gap;
 }
