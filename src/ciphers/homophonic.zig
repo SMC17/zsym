@@ -198,6 +198,17 @@ const ENGLISH_FREQ = [PLAINTEXT_LEN]f64{
     0.028, 0.010, 0.023, 0.001, 0.020, 0.001,
 };
 
+/// German letter frequencies (a–z), Wikipedia/DeReKo corpus.
+/// Exported as pub for callers targeting German-language ciphers (e.g. Copiale).
+pub const GERMAN_FREQ = [PLAINTEXT_LEN]f64{
+    // a       b       c       d       e       f       g       h       i       j
+    0.0651, 0.0189, 0.0306, 0.0508, 0.1740, 0.0166, 0.0301, 0.0476, 0.0755, 0.0027,
+    // k       l       m       n       o       p       q       r       s       t
+    0.0121, 0.0344, 0.0253, 0.0978, 0.0251, 0.0067, 0.0002, 0.0700, 0.0727, 0.0615,
+    // u       v       w       x       y       z
+    0.0435, 0.0067, 0.0189, 0.0003, 0.0004, 0.0113,
+};
+
 /// Initialise a key by sorting symbols by frequency and assigning them to
 /// letters in decreasing-frequency order (frequency-matching initialisation).
 /// This gives a better starting point than random, especially for short texts.
@@ -463,6 +474,108 @@ test "HomophoneKey: solver recovers 26-symbol cipher on trigram LM" {
 
     try testing.expectEqual(@as(usize, plain.len), result.plaintext.len);
     try testing.expect(std.math.isFinite(result.score));
+}
+
+// ─── Copiale-scale validation ────────────────────────────────────────────────
+// Goethe, "Erlkönig" (ca. 1782, public domain). Transliteration: ä→ae ö→oe ü→ue.
+// All 8 lines concatenated; spaces included for readability, stripped before use.
+const ERLKOENIG_DE: []const u8 =
+    "wer reitet so spaet durch nacht und wind " ++
+    "es ist der vater mit seinem kind " ++
+    "er hat den knaben wohl in dem arm " ++
+    "er fasst ihn sicher er haelt ihn warm " ++
+    "dem vater grausets er reitet geschwind " ++
+    "er haelt in armen das aechzende kind " ++
+    "er erreicht den hof mit mueh und not " ++
+    "in seinen armen das kind war tot";
+
+test "Copiale-scale: correct key (75 sym, German) ranks top-2% over 100 random keys" {
+    // CLAIM (falsifiable): n-gram scorer ranks genuine German plaintext in the
+    // 98th percentile of 100 random symbol→letter assignments on a 75-symbol cipher.
+    // FALSIFIER: correct key scores ≤ 98 out of 100 random keys on this text.
+    const alloc = testing.allocator;
+    const alpha = [_][]const u8{ "a","b","c","d","e","f","g","h","i","j","k","l","m",
+        "n","o","p","q","r","s","t","u","v","w","x","y","z" };
+    var lm: ngram.NGramLM = undefined;
+    try lm.initInPlace(alloc, 3, &alpha, 0.01);
+    defer lm.deinit();
+
+    // Filter ERLKOENIG_DE to letter-only stream (≤512 chars).
+    var letter_buf: [512]u8 = undefined;
+    var n_letters: usize = 0;
+    for (ERLKOENIG_DE) |c| {
+        if (c >= 'a' and c <= 'z') { letter_buf[n_letters] = c; n_letters += 1; }
+    }
+    const letters = letter_buf[0..n_letters];
+    const train_tokens = try lm.arena.allocator().alloc([]const u8, n_letters);
+    for (letters, 0..) |_, i| train_tokens[i] = letters[i .. i + 1];
+    try lm.fit(train_tokens);
+
+    // Encode with a known 75-symbol key.
+    const n_sym: usize = 75;
+    const true_key = HomophoneKey.random(12345, n_sym);
+    const symbols = try true_key.encodeSlice(alloc, letters, 0);
+    defer alloc.free(symbols);
+
+    const decode_buf = try alloc.alloc(u8, symbols.len);
+    defer alloc.free(decode_buf);
+    const true_score = try scoreKey(alloc, &true_key, symbols, &lm, decode_buf);
+
+    // Count how many of 100 random keys score below the correct key.
+    var n_below: u32 = 0;
+    for (0..100) |ri| {
+        const rand_key = HomophoneKey.random(@as(u64, ri) * 31 + 7, n_sym);
+        const s = try scoreKey(alloc, &rand_key, symbols, &lm, decode_buf);
+        if (true_score > s) n_below += 1;
+    }
+    try testing.expect(n_below >= 98);
+}
+
+
+test "Copiale-scale: solver beats best-of-30 random keys (75 sym, 5×500 iters)" {
+    // CLAIM: the hill-climb solver scores higher than the best of 30 random keys,
+    // demonstrating that iterative search adds value over exhaustive random sampling
+    // at Copiale alphabet scale (75 symbols, ~233 German letter tokens).
+    const alloc = testing.allocator;
+    const alpha = [_][]const u8{ "a","b","c","d","e","f","g","h","i","j","k","l","m",
+        "n","o","p","q","r","s","t","u","v","w","x","y","z" };
+    var lm: ngram.NGramLM = undefined;
+    try lm.initInPlace(alloc, 3, &alpha, 0.01);
+    defer lm.deinit();
+    var letter_buf3: [512]u8 = undefined;
+    var n_letters3: usize = 0;
+    for (ERLKOENIG_DE) |c| {
+        if (c >= 'a' and c <= 'z') { letter_buf3[n_letters3] = c; n_letters3 += 1; }
+    }
+    const letters3 = letter_buf3[0..n_letters3];
+    const train_tokens3 = try lm.arena.allocator().alloc([]const u8, n_letters3);
+    for (letters3, 0..) |_, i| train_tokens3[i] = letters3[i .. i + 1];
+    try lm.fit(train_tokens3);
+
+    const n_sym: usize = 75;
+    const true_key = HomophoneKey.random(11111, n_sym);
+    const symbols = try true_key.encodeSlice(alloc, letters3, 0);
+    defer alloc.free(symbols);
+    const decode_buf = try alloc.alloc(u8, symbols.len);
+    defer alloc.free(decode_buf);
+
+    // Best of 30 random keys (pure random search baseline).
+    var best_rand: f64 = -std.math.inf(f64);
+    for (0..30) |ri| {
+        const rand_key = HomophoneKey.random(@as(u64, ri) * 41 + 11, n_sym);
+        const s = try scoreKey(alloc, &rand_key, symbols, &lm, decode_buf);
+        if (s > best_rand) best_rand = s;
+    }
+
+    // Solver with modest budget.
+    var result = try solve(alloc, symbols, n_sym, &lm, .{
+        .n_restarts = 5,
+        .n_iterations = 500,
+        .base_seed = 42,
+    });
+    defer result.deinit();
+
+    try testing.expect(result.score > best_rand);
 }
 
 test "HomophoneKey: frequency flattening — 52 symbols have lower max-freq than 26" {
